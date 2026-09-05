@@ -1,0 +1,516 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7; --panel: #fff; --ink: #14161a; --ink-dim: #5c6370;
+  --ink-faint: #8b93a1; --line: #e2e5ea; --hover: #eef0f4; --sunk: #e8eaee;
+  --ok: #22c55e; --warn: #eab308; --bad: #ef4444; --accent: #3b82f6;
+  --shadow: 0 1px 2px rgba(16,20,28,.06), 0 6px 18px rgba(16,20,28,.07);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1014; --panel: #171a20; --ink: #eef1f6; --ink-dim: #a4acbb;
+    --ink-faint: #6f7889; --line: #262b34; --hover: #212630; --sunk: #11141a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.45);
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  display: flex; flex-direction: column;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- the board's own controls ---------- */
+/* No header bar: the whole viewport is board. The controls live in a small hot
+   corner that shows nothing until the pointer arrives -- and stays up for the
+   whole of edit mode, where they are the only way to add or arrange anything.
+   Bottom right, so they are nowhere near a widget's own controls. */
+.corner {
+  position: fixed; bottom: 0; right: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+  padding: 10px 12px;
+  min-width: 54px; min-height: 46px;   /* the hot zone while the icons are hidden */
+}
+.corner > * { opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+.interacting-only { display: none; }
+body.interacting .interacting-only { display: inline-flex; }
+.corner:hover > *,
+.corner:focus-within > *,
+body.editing .corner > * { opacity: 1; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) { .corner > * { transition: none; } }
+
+.spacer { flex: 1 1 auto; }
+
+button {
+  font: inherit; color: var(--ink-dim); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px;
+  cursor: pointer; line-height: 1.45;
+}
+button:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); color: #fff; }
+button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+/* Icon buttons: square, and the glyph inherits the button's colour. */
+.icon { padding: 5px; line-height: 0; }
+button svg { display: block; width: 15px; height: 15px; }
+.grabber svg { width: 13px; height: 13px; opacity: .85; }
+.rot-grip svg { width: 13px; height: 13px; }
+
+.corner button {
+  color: #fff; background: rgba(18, 20, 26, .66); backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, .12); border-radius: 9px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+}
+.corner button:hover:not(:disabled) { background: rgba(18, 20, 26, .88); color: #fff; }
+.corner button.primary,
+.corner button.primary:hover:not(:disabled) {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+
+
+/* Floats, so a problem never costs the board a strip of its height. */
+.banner {
+  position: fixed; left: 14px; bottom: 14px; z-index: 55;
+  max-width: min(56ch, calc(100vw - 28px)); margin: 0;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .38);
+  padding: 11px 14px; border-radius: 10px; font-size: 13px; line-height: 1.55;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(7px);
+  border: 1px solid color-mix(in srgb, var(--bad) 55%, var(--line));
+  border-left: 3px solid var(--bad);
+}
+.banner.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); border-left-color: var(--warn); }
+[hidden] { display: none !important; }
+
+/* A short-lived line, so entering a page tells you how to leave it. */
+.toast {
+  /* Clear of the control corner below-right, which the toast would otherwise
+     collide with on a narrow screen. */
+  position: fixed; left: 50%; bottom: 62px; transform: translateX(-50%);
+  z-index: 70; padding: 8px 14px; border-radius: 999px;
+  font-size: 12.5px; color: #fff;
+  background: rgba(18, 20, 26, .82); backdrop-filter: blur(7px);
+  border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  pointer-events: none;
+}
+
+/* ---------- canvas: widgets are placed freely, each with its own x/y/w/h ---------- */
+/* The canvas is the whole viewport: the whole board lives on one screen and
+   nothing scrolls. */
+.canvas { flex: 1 1 auto; position: relative; margin: 12px; min-height: 0; }
+.widget {
+  position: absolute;
+  left: calc(var(--x, 0) * 100%); top: calc(var(--y, 0) * 100%);
+  width: calc(var(--w, .4) * 100%); height: calc(var(--h, .4) * 100%);
+  min-width: 0;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+}
+/* No titles, and no bar either: bare icons float over the widget's own content.
+   Revealing them cannot resize the body -- reflowing an iframe on hover would
+   make every panel flicker. */
+.widget > .head {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+  display: flex; align-items: flex-start; justify-content: flex-end;
+  /* A narrow carousel has seven controls; without wrapping the leftmost ones
+     overflow the tile and are clipped away entirely. */
+  flex-wrap: wrap; gap: 5px;
+  padding: 7px 8px;
+  opacity: 0; pointer-events: none;
+  transition: opacity .14s ease;
+}
+/* Each control gets its own chip rather than one bar across the top. The chip
+   is what makes the glyph legible -- these sit on whatever the widget happens
+   to be showing, which is often a white page. */
+.widget > .head button,
+.widget > .head .stamp,
+.widget > .head .grabber {
+  color: #fff;
+  background: rgba(18, 20, 26, .66);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 9px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+}
+.widget > .head button {
+  padding: 5px;
+  transition: background .12s ease, transform .12s ease;
+}
+.widget > .head button:hover:not(:disabled) {
+  background: rgba(18, 20, 26, .88);
+  color: #fff;
+  transform: scale(1.06);
+}
+.widget > .head .stamp { padding: 3px 7px; opacity: 1; }
+.widget > .head .grabber { padding: 5px; }
+@media (prefers-reduced-motion: reduce) {
+  .widget > .head button { transition: none; }
+  .widget > .head button:hover:not(:disabled) { transform: none; }
+}
+.widget:hover > .head,
+.widget:focus-within > .head,
+body.editing .widget > .head { opacity: 1; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) { .widget > .head { transition: none; } }
+.widget .body { position: absolute; inset: 0; background: var(--sunk); }
+.widget iframe { display: block; width: 100%; height: 100%; border: 0; background: transparent; }
+.stamp { font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+.state {
+  position: absolute; inset: 0; display: none; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; padding: 22px;
+  text-align: center; background: var(--sunk);
+}
+.state.show { display: flex; }
+.state .title { font-weight: 650; }
+.state .why { color: var(--ink-dim); font-size: 12.5px; max-width: 52ch; }
+.spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+
+/* ---------- edit mode ---------- */
+body.editing .widget { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+/* An iframe swallows pointer events, which would break dragging the corner.
+   Shield it while editing. */
+/* A widget is one object: its text is not selectable and a press anywhere on it
+   starts a drag rather than landing in its content. */
+.widget { user-select: none; -webkit-user-select: none; }
+.widget .shield { display: none; position: absolute; inset: 0; z-index: 5; cursor: default; }
+/* Anything holding a page keeps its shield up at rest, so a click cannot fall
+   through into someone else's document... */
+.widget.has-frame .shield { display: block; }
+body.editing .widget .shield { display: block; }
+/* ...until the pointer button says otherwise. Never while editing, though:
+   the layout has to stay draggable. */
+body:not(.editing) .widget.has-frame.interactive .shield { display: none; }
+/* While a page is in use, every control on the board gets out of the way -- the
+   point is to reach the page's own buttons, which the widget's sat on top of. */
+body.interacting .widget > .head { display: none; }
+body.interacting .corner button:not(.interacting-only) { display: none; }
+body:not(.editing) .widget.has-frame.interactive {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -1px;
+}
+
+/* Eight grips: four edges and four corners, so a widget resizes from any side.
+   Dragging a left or top edge moves the widget's origin too, leaving the
+   opposite edge exactly where it was. */
+.handle { display: none; position: absolute; z-index: 8; touch-action: none; }
+body.editing .handle { display: block; }
+
+.handle-n { top: -4px; left: 15px; right: 15px; height: 9px; cursor: ns-resize; }
+.handle-s { bottom: -4px; left: 15px; right: 15px; height: 9px; cursor: ns-resize; }
+.handle-w { left: -4px; top: 15px; bottom: 15px; width: 9px; cursor: ew-resize; }
+.handle-e { right: -4px; top: 15px; bottom: 15px; width: 9px; cursor: ew-resize; }
+
+.handle-nw, .handle-ne, .handle-sw, .handle-se { width: 17px; height: 17px; }
+.handle-nw { top: -4px; left: -4px; cursor: nwse-resize; }
+.handle-se { bottom: -4px; right: -4px; cursor: nwse-resize; }
+.handle-ne { top: -4px; right: -4px; cursor: nesw-resize; }
+.handle-sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+
+.handle::after {
+  content: ""; position: absolute; inset: 0; margin: auto;
+  background: var(--accent); border-radius: 3px;
+  opacity: 0; transition: opacity .15s;
+}
+.handle-n::after, .handle-s::after { height: 3px; width: 34px; }
+.handle-e::after, .handle-w::after { width: 3px; height: 34px; }
+.handle-nw::after, .handle-ne::after, .handle-sw::after, .handle-se::after {
+  width: 7px; height: 7px; border-radius: 50%; opacity: .4;
+}
+.handle:hover::after { opacity: .9; }
+
+.widget.resizing { user-select: none; outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* ---------- dragging to reposition ---------- */
+body.editing .widget > .head { cursor: grab; touch-action: none; }
+body.editing .widget > .head:active { cursor: grabbing; }
+/* Buttons in a widget's control row must stay clickable, not start a drag. */
+body.editing .widget > .head button { cursor: pointer; touch-action: auto; }
+
+body.dragging { user-select: none; }
+.widget.dragging {
+  z-index: 60; opacity: .92; pointer-events: none;
+  box-shadow: 0 12px 34px rgba(0,0,0,.35), 0 0 0 2px var(--accent);
+  transition: none;
+}
+.grabber {
+  display: none; color: var(--ink-faint); line-height: 0;
+  margin-right: 2px; flex: none;
+}
+body.editing .grabber { display: inline-block; }
+
+.size-readout {
+  position: absolute; right: 8px; bottom: 8px; z-index: 9;
+  padding: 3px 8px; border-radius: 7px; font-size: 12px; font-variant-numeric: tabular-nums;
+  background: var(--accent); color: #fff; pointer-events: none; display: none;
+}
+.widget.resizing .size-readout { display: block; }
+
+.edit-only { display: none; }
+body.editing .edit-only { display: inline-flex; }
+
+/* ---------- add / edit dialog ---------- */
+dialog {
+  border: 1px solid var(--line); border-radius: 14px; padding: 0;
+  background: var(--panel); color: var(--ink); box-shadow: var(--shadow);
+  width: min(460px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgba(0,0,0,.45); }
+dialog form { padding: 18px 20px 16px; }
+/* The page cannot scroll, so the dialog has to carry its own limit or a tall
+   gallery pushes Save out of reach. */
+dialog { max-height: min(86vh, 760px); overflow: auto; }
+.dlg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.dlg-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+dialog h2 { margin: 0 0 14px; font-size: 15px; font-weight: 650; }
+
+/* ---------- widget gallery (step 1) ---------- */
+.gallery {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+.wcard {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
+  text-align: left; padding: 13px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  cursor: pointer; line-height: 1.35;
+}
+.wcard:hover {
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.wcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wcard-art {
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border-radius: 10px; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.wcard-art svg { width: 19px; height: 19px; }
+.wcard-name { font-weight: 650; font-size: 13.5px; }
+.wcard-blurb { font-size: 11.5px; color: var(--ink-dim); }
+
+/* ---------- kind chips (step 2) ---------- */
+.kinds {
+  display: grid; gap: 8px; margin-bottom: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.kind {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  text-align: left; padding: 9px 11px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  cursor: pointer; line-height: 1.35;
+}
+.kind:hover { background: var(--hover); }
+.kind.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.kind-name { font-weight: 600; font-size: 13px; }
+.kind-blurb { font-size: 11.5px; color: var(--ink-dim); }
+.field { display: block; margin-bottom: 12px; }
+.field > span { display: block; font-size: 12px; color: var(--ink-dim); margin-bottom: 4px; }
+.field input, .field select, .field textarea {
+  width: 100%; font: inherit; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+}
+.field textarea { min-height: 72px; resize: vertical; }
+.field input:focus, .field select:focus, .field textarea:focus {
+  outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent);
+}
+.row { display: flex; gap: 10px; }
+.row > .field { flex: 1 1 0; }
+.actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.hint { font-size: 12px; color: var(--ink-faint); margin: -6px 0 12px; }
+.error { font-size: 12.5px; color: var(--bad); margin: 0 0 10px; }
+
+/* ---------- traffic light widget: the light, and nothing else ---------- */
+.tl {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; width: 100%;
+  /* Percentage padding resolves against WIDTH on every side, which starves a
+     short, wide tile of height. Cap it. */
+  padding: clamp(4px, 3%, 16px);
+  /* Query container so the housing can be sized against BOTH axes: fitting
+     only one of them lets it overflow and get clipped in a wide, short tile. */
+  container-type: size;
+}
+.tl .housing {
+  background: #0a0c10; border: 1px solid #2a3039;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  aspect-ratio: 1 / 2.55;
+  height: min(100cqh, 255cqw);
+  padding: 3.2%; gap: 3.2%;
+  border-radius: 14% / 5.5%;
+}
+/* Lay the light down when the tile is wider than it is tall. A container query
+   rather than a class, so it is decided by layout itself and cannot depend on
+   when an observer happens to fire. */
+@container (min-aspect-ratio: 1 / 1) {
+  /* Same specificity as the upright rule above (.tl .housing), so these win by
+     coming later. A bare `.housing` here silently loses half the declarations. */
+  .tl .housing {
+    flex-direction: row;
+    aspect-ratio: 2.55 / 1;
+    height: auto;
+    width: min(100cqw, 255cqh);
+    border-radius: 5.5% / 14%;
+  }
+}
+.tl .lamp {
+  flex: 1 1 0; aspect-ratio: 1; min-width: 0; min-height: 0;
+  border-radius: 50%; background: var(--c); opacity: .12;
+  transition: opacity .4s ease, box-shadow .4s ease;
+}
+.tl .lamp.on {
+  opacity: 1;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 22%, transparent),
+              0 0 30px 6px color-mix(in srgb, var(--c) 50%, transparent);
+}
+.tl .lamp[data-zone="GREEN"] { --c: #22c55e; }
+.tl .lamp[data-zone="YELLOW"] { --c: #eab308; }
+.tl .lamp[data-zone="RED"] { --c: #ef4444; }
+
+/* ---------- web page rotation widget ---------- */
+/* Two stacked slides. The idle one sits at z-index 1 and opacity 0 -- still
+   loaded and laid out, just invisible -- and the visible one at z-index 2.
+   Explicit z-indexes, so DOM order (which never changes, because reparenting an
+   iframe reloads it) can never decide what is on top. Both stay under the edit
+   shield at z-index 5. */
+.rot-slide {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 0; background: var(--sunk);
+  opacity: 0; z-index: 1;
+  /* Outgoing holds full opacity until the incoming slide has finished arriving,
+     then drops instantly. That avoids the dip you get when both sides cross-fade
+     at once, and needs no second timer to demote the old slide. */
+  transition: opacity 0s linear .45s;
+}
+.rot-slide.on { opacity: 1; z-index: 2; transition: opacity .45s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .rot-slide, .rot-slide.on { transition: none; }
+}
+
+/* Its own overlay rather than the shared .state, which toggles `display` and so
+   cannot fade -- using it mid-swap would give exactly the flash we avoid. */
+.rot-overlay {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 20px; text-align: center;
+  background: color-mix(in srgb, var(--sunk) 88%, transparent);
+  opacity: 0; pointer-events: none; transition: opacity .25s ease;
+}
+.rot-overlay.show { opacity: 1; }
+.rot-overlay .why { color: var(--ink-dim); font-size: 12.5px; max-width: 46ch; }
+.rot-overlay.error .spinner { display: none; }
+.rot-overlay.error .why { color: var(--bad); }
+@media (prefers-reduced-motion: reduce) { .rot-overlay { transition: none; } }
+
+.rot-progress {
+  position: absolute; left: 0; bottom: 0; width: 100%; height: 2px; z-index: 4;
+  transform: scaleX(0); transform-origin: left center; pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+@keyframes rot-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@media (prefers-reduced-motion: reduce) { .rot-progress { display: none; } }
+
+/* ---------- calendar widget ---------- */
+.cal {
+  height: 100%; width: 100%; padding: 5% 5% 4%;
+  display: flex; flex-direction: column; gap: 3%;
+  container-type: size;      /* so the type can scale with the tile */
+}
+.cal-month {
+  text-align: center; font-weight: 650; letter-spacing: -.01em;
+  font-size: clamp(11px, 9cqmin, 20px);
+}
+.cal-week, .cal-days { display: grid; grid-template-columns: repeat(7, 1fr); }
+.cal-week {
+  text-align: center; color: var(--ink-faint);
+  font-size: clamp(7px, 5cqmin, 12px); letter-spacing: .04em;
+}
+.cal-days {
+  flex: 1 1 auto; min-height: 0; grid-auto-rows: 1fr;
+  font-size: clamp(8px, 6cqmin, 15px); font-variant-numeric: tabular-nums;
+}
+.cal-days span { display: grid; place-items: center; border-radius: 999px; }
+.cal-days .dim { color: var(--ink-faint); opacity: .4; }
+.cal-days .today { background: var(--accent); color: #fff; font-weight: 650; }
+
+/* ---------- analog clock ---------- */
+.analog {
+  height: 100%; width: 100%; padding: 5%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+}
+/* The viewBox letterboxes the face into whatever box the tile gives it, so no
+   container query is needed here. */
+.analog svg { flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; }
+.analog .z {
+  flex: none; font-size: 10.5px; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.cl-face { fill: color-mix(in srgb, var(--panel) 70%, var(--sunk)); stroke: var(--line); stroke-width: 1.4; }
+.cl-tick { stroke: var(--ink-faint); stroke-width: 1.2; }
+.cl-tick.major { stroke: var(--ink-dim); stroke-width: 2.4; }
+.cl-hour, .cl-minute { stroke: var(--ink); stroke-linecap: round; }
+.cl-hour { stroke-width: 4.6; }
+.cl-minute { stroke-width: 3; }
+.cl-second { stroke: var(--bad); stroke-width: 1.3; stroke-linecap: round; }
+.cl-pin { fill: var(--ink); }
+
+/* ---------- rotation config rows (in the dialog) ---------- */
+.rot-rows {
+  display: flex; flex-direction: column; gap: 8px;
+  /* The dialog has no max-height and the page cannot scroll, so without this
+     enough rows push Save and Cancel off-screen for good. */
+  max-height: 34vh; overflow-y: auto; padding: 1px;
+}
+.rot-row { display: flex; align-items: center; gap: 8px; }
+.rot-row .rot-url { flex: 1 1 auto; min-width: 0; }
+.rot-row .secs { width: 5.4em; flex: none; text-align: right; }
+.rot-row .unit { color: var(--ink-faint); font-size: 12px; flex: none; }
+.rot-row.dragging { opacity: .45; }
+.rot-row.drop-target { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 9px; }
+.rot-grip {
+  flex: none; cursor: grab; padding: 5px; line-height: 0;
+  color: var(--ink-faint);
+}
+.rot-grip:active { cursor: grabbing; }
+.rot-empty { color: var(--ink-faint); font-size: 12.5px; padding: 4px 2px 0; margin: 0; }
+.rot-add { margin-top: 8px; }
+
+/* ---------- clock + note widgets ---------- */
+.bigclock {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; gap: 2%; padding: 6%; overflow: hidden; text-align: center;
+  /* Sized against the TILE, not the viewport: a widget can be dragged to any
+     size, and a viewport-based clamp overflows a narrow one. */
+  container-type: size;
+}
+.bigclock .t {
+  font-weight: 250; font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+  line-height: 1.05; white-space: nowrap;
+  font-size: clamp(13px, min(19cqw, 34cqh), 60px);
+}
+.bigclock .d {
+  color: var(--ink-dim); line-height: 1.25;
+  font-size: clamp(8px, min(7cqw, 13cqh), 14px);
+}
+.bigclock .z {
+  letter-spacing: .18em; text-transform: uppercase; color: var(--ink-faint);
+  font-size: clamp(6px, min(5cqw, 9cqh), 11px);
+}
+.note { padding: 16px 18px; white-space: pre-wrap; line-height: 1.6; height: 100%; overflow: auto; }
+
+@media (max-width: 760px) {
+  .canvas { margin: 8px; }
+  .corner { padding: 8px 9px; }
+}

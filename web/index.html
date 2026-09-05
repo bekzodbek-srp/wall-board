@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- No header bar. The board's own controls live in the top-right corner and
+     only appear when you go there. -->
+<div class="corner" id="corner">
+  <button type="button" class="icon edit-only" id="addWidget" data-icon="add"
+          title="Add a widget" aria-label="Add a widget"></button>
+  <button type="button" class="icon" id="refreshAll" data-icon="reload"
+          title="Reload every panel" aria-label="Reload every panel"></button>
+  <button type="button" class="icon" id="editToggle" data-icon="edit"
+          title="Edit the layout" aria-label="Edit the layout"></button>
+  <!-- Only while a page is in use: the one control that stays reachable. -->
+  <button type="button" class="icon interacting-only" id="stopInteract" data-icon="pointerOff"
+          title="Stop using this page" aria-label="Stop using this page"></button>
+</div>
+<div id="toast" class="toast" hidden></div>
+
+<div id="banner" class="banner" hidden></div>
+<div class="canvas" id="canvas"></div>
+
+<dialog id="widgetDialog">
+  <form method="dialog" id="widgetForm">
+    <div class="dlg-head">
+      <button type="button" class="icon" id="galleryBack" data-icon="back"
+              title="Back to the gallery" aria-label="Back to the gallery" hidden></button>
+      <h2 id="dialogTitle">Add widget</h2>
+    </div>
+    <p class="error" id="dialogError" hidden></p>
+
+    <!-- step 1: choose a family -->
+    <div id="stepPick">
+      <div class="gallery" id="gallery"></div>
+    </div>
+
+    <!-- step 2: choose a kind, then set its options -->
+    <div id="stepConfig" hidden>
+      <div class="kinds" id="kinds" hidden></div>
+
+      <label class="field" data-for="clock">
+        <span>Timezone</span>
+        <select id="fTimezone"></select>
+      </label>
+      <label class="field" data-for="clock">
+        <span>Label under the clock</span>
+        <input id="fLabel" type="text" placeholder="Pennsylvania">
+      </label>
+
+      <label class="field" data-for="calendar">
+        <span>Timezone</span>
+        <select id="fCalTimezone"></select>
+      </label>
+      <label class="field" data-for="calendar">
+        <span>Weeks start on</span>
+        <select id="fWeekStart">
+          <option value="1">Monday</option>
+          <option value="0">Sunday</option>
+        </select>
+      </label>
+
+      <label class="field" data-for="note">
+        <span>Text</span>
+        <textarea id="fText" placeholder="Anything you want on the board."></textarea>
+      </label>
+
+      <!-- data-for lives on the CONTAINER only. syncDialogFields() rewrites
+           .hidden on every [data-for] node, so one on a page row would clobber
+           that row's own visibility. -->
+      <div class="field" data-for="carousel">
+        <span>Pages</span>
+        <div class="rot-rows" id="fPages"></div>
+        <p class="rot-empty" id="fPagesEmpty" hidden>No pages yet — add one below.</p>
+        <button type="button" class="icon rot-add" id="fAddPage" data-icon="add"
+                title="Add a page" aria-label="Add a page"></button>
+      </div>
+      <p class="hint" data-for="carousel" id="carouselHint"></p>
+
+      <p class="hint" data-for="traffic-light">Shows green, amber or red for the
+        client's live-system window. Nothing to configure.</p>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="dialogCancel">Cancel</button>
+      <button type="button" class="primary" id="dialogSave" hidden>Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

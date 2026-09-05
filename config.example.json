@@ -1,0 +1,25 @@
+{
+  "port": 8770,
+  "title": "Wallboard",
+  "timezone": "America/New_York",
+  "timezoneLabel": "",
+  "layout": "fractional",
+  "types": "families-v1",
+  "tiles": [
+    {
+      "id": "clock-1", "type": "clock", "kind": "digital", "title": "Clock",
+      "timezone": "America/New_York", "label": "",
+      "x": 0.02, "y": 0.04, "w": 0.24, "h": 0.26
+    },
+    {
+      "id": "calendar-1", "type": "calendar", "kind": "month", "title": "Calendar",
+      "timezone": "America/New_York", "weekStart": 1,
+      "x": 0.29, "y": 0.04, "w": 0.26, "h": 0.44
+    },
+    {
+      "id": "note-1", "type": "note", "title": "Note",
+      "text": "Hover the bottom-right corner, press Edit layout, then Add widget.",
+      "x": 0.58, "y": 0.04, "w": 0.3, "h": 0.2
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# The live board: per-installation state, rewritten every time a widget is
+# moved or resized, and it names whatever internal hosts you point it at.
+# config.example.json is the seed a fresh checkout starts from.
+config.json
+config.json.tmp
+
+# Credentials, if a deployment ever reintroduces them.
+secrets.json
+*.env
+
+__pycache__/
+*.py[cod]
+
+.DS_Store
+*.swp
