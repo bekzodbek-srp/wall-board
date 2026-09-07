@@ -165,14 +165,25 @@ Behaviour worth knowing:
 - **A page the proxy refuses still gets shown**, because the proxy's own 403 /
   502 notice explains what is wrong and names the fix. That is more useful on a
   wall than a blank tile.
-- **Every page is proxied by default**, so sites that set `X-Frame-Options` can
-  still be embedded — but see Security: each page's origin joins the allowlist.
-- **Or tick `direct` on a page** and the browser fetches it itself, with no
-  proxy in the way. That only works for a site that permits being framed (no
-  `X-Frame-Options`, no `frame-ancestors`), but when it does it is the better
-  option: fewer moving parts, the site's own session, and its origin never joins
-  the proxy allowlist. It also works when the *server* cannot reach the site at
-  all — which is what makes a restricted host usable.
+- **Pages load in your browser by default** — the tick marked *in browser* on
+  each row. Nothing passes through this server: the site sees your browser, with
+  its own session, and its origin never joins the proxy allowlist or the health
+  probe. It also works when the *server* has no route to the site at all, which
+  is what makes a restricted host usable.
+- **Untick it for a site that refuses to be framed.** A site sending
+  `X-Frame-Options` or a `frame-ancestors` rule cannot be embedded by a browser
+  — that is enforced before any of this code runs, and no client-side trick gets
+  around it. Routing it through this server does work, because the proxy strips
+  those headers on the way past; the cost is that the server must be able to
+  reach the site, and its origin joins the allowlist (see Security).
+
+Check which one a site needs:
+
+```sh
+curl -sSL -o /dev/null -D - https://your-site/ | grep -iE 'x-frame-options|frame-ancestors'
+```
+
+Nothing printed means it will load in the browser.
 
 > **The `traffic-light` widget duplicates a rule.** Its cutoffs are the same
 > ones as `../client-clock`, and the reasoning behind them is in that project's

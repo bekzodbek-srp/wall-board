@@ -1116,6 +1116,9 @@
       : "Shown in this order, each for its own duration (1–60 seconds, 10 by "
         + "default), looping forever. Drag the handle to reorder, or focus it and "
         + "press the up and down arrows.";
+    el("carouselHint").textContent += " Pages marked “in browser” are loaded by "
+      + "your browser; untick that for a site that refuses to be framed, and this "
+      + "server will fetch it instead.";
   }
 
   // ---- the widget catalogue --------------------------------------------
@@ -1303,10 +1306,10 @@
       '<input type="number" class="secs" min="1" max="60" step="1" ' +
         'aria-label="Seconds to display">' +
       '<span class="unit">s</span>' +
-      '<label class="rot-direct" title="Load this page straight from the site, ' +
-        'bypassing the proxy. Faster, and it works even when this server has no ' +
-        'route to the site — but only if the site allows being embedded.">' +
-        '<input type="checkbox" class="rot-direct-input"><span>direct</span></label>' +
+      '<label class="rot-direct" title="Loaded by your browser, straight from the ' +
+        'site. Untick to route it through this server instead, which is what lets ' +
+        'a site that refuses to be framed work at all.">' +
+        '<input type="checkbox" class="rot-direct-input"><span>in browser</span></label>' +
       '<button type="button" class="icon danger rot-remove" ' +
         'aria-label="Remove this page" title="Remove this page">' + icon("remove") + '</button>';
 
@@ -1538,7 +1541,9 @@
     el("addWidget").onclick = () => openDialog(null);
     el("refreshAll").onclick = () => widgets.forEach((w) => w.reload && w.reload());
     el("galleryBack").onclick = () => showStep("pick");
-    el("fAddPage").onclick = () => addPageRow("", PAGE_DEFAULT_S, true);
+    // New pages default to loading in the browser. The proxy is the fallback
+    // for sites that refuse to be framed, not the normal route.
+    el("fAddPage").onclick = () => addPageRow("", PAGE_DEFAULT_S, true, true);
     el("dialogCancel").onclick = () => dialog.close();
     el("dialogSave").onclick = commitDialog;
 
