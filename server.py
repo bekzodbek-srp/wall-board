@@ -328,6 +328,39 @@ def validate_config(incoming: dict, previous: dict) -> dict:
     return merged
 
 
+def egress_proxy() -> str:
+    """The proxy this host forces outbound traffic through, if any."""
+    proxies = urllib.request.getproxies()
+    return proxies.get("https") or proxies.get("http") or ""
+
+
+def unreachable_notice(origin: str, exc: Exception) -> tuple[str, str]:
+    """Title and detail for a failed upstream fetch.
+
+    Worth distinguishing: a refused CONNECT means *this host* is not allowed out,
+    which says nothing about whether the upstream is up. Reporting that as
+    "start the service" sends people to debug a machine that is running fine.
+    """
+    text = str(exc)
+    proxy = egress_proxy()
+    if "tunnel connection failed" in text.lower():
+        return (
+            "This host is not allowed to reach that site",
+            f"The wallboard server cannot open a connection to "
+            f"<code>{html.escape(origin)}</code>. Its outbound traffic is forced "
+            f"through <code>{html.escape(proxy or 'a proxy')}</code>, which "
+            f"refused it — {html.escape(text)}. The site itself is most likely "
+            "fine; it is this host's egress that is restricted. Shared hosts "
+            "often allow only a whitelist of sites, so reaching your own servers "
+            "needs unrestricted outbound access, or somewhere else to run this.",
+        )
+    return (
+        "Upstream unreachable",
+        f"Could not reach <code>{html.escape(origin)}</code> — "
+        f"{html.escape(text)}. Start the service, then use Reload on this tile.",
+    )
+
+
 def origins_of(config: dict) -> list[str]:
     """Every upstream the proxy will serve — the allowlist.
 
@@ -577,6 +610,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 up = True
         except OSError as exc:
             detail = f"{type(exc).__name__}: {exc}"
+            proxy = egress_proxy()
+            if proxy:
+                # The probe opens a direct socket, which a host that forces all
+                # traffic through a proxy will always refuse. Say so, rather than
+                # blaming the upstream.
+                detail += (f" (this host sends outbound traffic through {proxy},"
+                           " so a direct probe cannot succeed either way)")
         return {
             "origin": origin,
             "reachable": up,
@@ -649,12 +689,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             status = exc.code
             upstream_headers = dict(exc.headers) if exc.headers else {}
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            return self._send_notice(
-                502, "Upstream unreachable",
-                f"Could not reach <code>{html.escape(origin)}</code> — "
-                f"{html.escape(str(exc))}. "
-                "Start the service, then use Reload on this tile.",
-            )
+            title, detail = unreachable_notice(origin, exc)
+            return self._send_notice(502, title, detail)
 
         if (upstream_headers.get("Content-Encoding") or "").lower() == "gzip":
             try:

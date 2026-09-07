@@ -264,10 +264,21 @@ the config API and the proxy. Leave it unset only if the host is already behind
 its own access control.
 
 **Outbound access.** The proxy has to reach your upstreams from the *host*, not
-from your laptop. PythonAnywhere's free accounts can only reach a whitelist of
-sites, so a private host of your own will not load; that needs a paid account.
-And a tile pointing at `http://localhost:…` now means localhost *on the server*,
-which is not your machine — use a publicly reachable address.
+from your laptop, and shared hosts often will not let it. PythonAnywhere's free
+accounts force all outbound traffic through a proxy that only allows a whitelist
+of sites, so your own servers will not load. It looks like this:
+
+```
+Tunnel connection failed: 403 Forbidden
+```
+
+That is the host's egress refusing a `CONNECT`; the site itself is fine. The
+widget says so rather than telling you to go and restart a healthy server. There
+is no way around it from inside the app — it needs an account with unrestricted
+outbound access, or somewhere else to run.
+
+A tile pointing at `http://localhost:…` also stops meaning your machine: on a
+host it is that host's own loopback. Use a publicly reachable address.
 
 **The board is a file.** `config.json` lives in the checkout and is rewritten
 whenever a widget moves. A WSGI host runs several worker processes, so each one
