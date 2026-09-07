@@ -226,10 +226,59 @@ is simple: only list hosts you trust with each other. Do not expose it on a netw
 interface, and do not add an upstream you do not trust — you are handing it your
 session.
 
+## Putting it on the internet
+
+`server.py` is a plain http.server app, so a WSGI host cannot import it
+directly. `wsgi.py` adapts it — the same handler, driven from a WSGI request —
+so there is one copy of the proxy logic, not two.
+
+On **PythonAnywhere**, replace the contents of the web app's WSGI file
+(`/var/www/<you>_pythonanywhere_com_wsgi.py`) with:
+
+```python
+import os
+import sys
+
+path = '/home/wallboard/wall-board'          # where you cloned it
+if path not in sys.path:
+    sys.path.insert(0, path)
+
+# Anyone who finds the URL gets the board AND the proxy behind it. Set this.
+os.environ['WALLBOARD_PASSWORD'] = 'choose-something-long'
+# os.environ['WALLBOARD_USERNAME'] = 'wallboard'   # optional, this is the default
+
+from wsgi import application               # noqa: E402,F401
+```
+
+Then hit **Reload** on the Web tab. Nothing else is needed: no virtualenv, no
+requirements — it is standard library only.
+
+Three things to know before you rely on it:
+
+**It is public, and the proxy is the point.** On loopback that was fine. On a
+public URL, anyone who reaches it can view the board, rewrite it through the
+config API, and use the proxy to fetch your allowlisted origins — with the
+framing protections stripped and their own cookies forwarded. Setting
+`WALLBOARD_PASSWORD` puts HTTP basic auth in front of *everything*: the page,
+the config API and the proxy. Leave it unset only if the host is already behind
+its own access control.
+
+**Outbound access.** The proxy has to reach your upstreams from the *host*, not
+from your laptop. PythonAnywhere's free accounts can only reach a whitelist of
+sites, so a private host of your own will not load; that needs a paid account.
+And a tile pointing at `http://localhost:…` now means localhost *on the server*,
+which is not your machine — use a publicly reachable address.
+
+**The board is a file.** `config.json` lives in the checkout and is rewritten
+whenever a widget moves. A WSGI host runs several worker processes, so each one
+watches the file's timestamp and re-reads it when another worker saves — a board
+edited in one process shows up in the others without a reload.
+
 ## Layout
 
 ```
 config.example.json    the starter board a fresh checkout is seeded from
+wsgi.py                WSGI adapter, for hosting it somewhere public
 config.json            the live board — written by the page, not in git
 server.py              static server + reverse proxy + config API
 web/index.html         page shell and the add/edit dialog
