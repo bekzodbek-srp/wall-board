@@ -32,6 +32,10 @@
   const widgets = new Map(); // id -> { node, def, reload?, dispose? }
 
   const proxied = (url) => "/proxy/" + url;
+  // A direct page is fetched by the browser itself, bypassing the proxy. That
+  // only works for sites that allow being framed, but it also works when the
+  // server has no route to them -- a host with restricted outbound traffic, say.
+  const pageSrc = (page) => (page.direct ? page.url : proxied(page.url));
   const uid = (kind) => `${kind}-${Math.random().toString(36).slice(2, 8)}`;
 
   // Rotator page durations. Re-clamped on the client as well as the server:
@@ -63,7 +67,11 @@
       if (!/^https?:\/\//i.test(url)) continue;
       let seconds = Number(page.seconds);
       if (!Number.isFinite(seconds) || seconds <= 0) seconds = PAGE_DEFAULT_S;
-      out.push({ url, seconds: clamp(Math.round(seconds), PAGE_MIN_S, PAGE_MAX_S) });
+      out.push({
+        url,
+        seconds: clamp(Math.round(seconds), PAGE_MIN_S, PAGE_MAX_S),
+        direct: Boolean(page.direct),
+      });
     }
     return out;
   }
@@ -465,7 +473,7 @@
           ready = true;
           if (waiting) { waiting = false; swap(); }
         };
-        slot.src = proxied(pages[target].url);
+        slot.src = pageSrc(pages[target]);
       }
 
       function swap() {
@@ -538,7 +546,7 @@
           painted = true;
           hideOverlay();
         };
-        slot.src = proxied(pages[index].url);
+        slot.src = pageSrc(pages[index]);
         waiting = false;
         if (single) return arm(FIRST_LOAD_MS);
         preload(nextIndex());
@@ -568,7 +576,7 @@
 
       addHeadButton(head, "reload", "Reload the current page", reload);
       addHeadButton(head, "open", "Open the current page in a new tab", () =>
-        window.open(proxied(pages[index].url), "_blank", "noopener"));
+        window.open(pageSrc(pages[index]), "_blank", "noopener"));
 
       function dispose() {
         stopped = true;                     // first, so nothing re-arms
@@ -599,7 +607,7 @@
         // The only loading state anywhere: the first paint, when the widget
         // would otherwise be an empty box. It never returns after that.
         showOverlay("");
-        slots[0].src = proxied(pages[0].url);
+        slots[0].src = pageSrc(pages[0]);
         render();
         if (single) {
           arm(FIRST_LOAD_MS);               // no rotation; just a load check
@@ -1284,7 +1292,7 @@
     row.querySelector(".rot-grip").focus();
   }
 
-  function addPageRow(url = "", seconds = PAGE_DEFAULT_S, focus = false) {
+  function addPageRow(url = "", seconds = PAGE_DEFAULT_S, focus = false, direct = false) {
     const row = document.createElement("div");
     row.className = "rot-row";
     row.innerHTML =
@@ -1295,11 +1303,16 @@
       '<input type="number" class="secs" min="1" max="60" step="1" ' +
         'aria-label="Seconds to display">' +
       '<span class="unit">s</span>' +
+      '<label class="rot-direct" title="Load this page straight from the site, ' +
+        'bypassing the proxy. Faster, and it works even when this server has no ' +
+        'route to the site — but only if the site allows being embedded.">' +
+        '<input type="checkbox" class="rot-direct-input"><span>direct</span></label>' +
       '<button type="button" class="icon danger rot-remove" ' +
         'aria-label="Remove this page" title="Remove this page">' + icon("remove") + '</button>';
 
     row.querySelector(".rot-url").value = url;
     row.querySelector(".secs").value = seconds;
+    row.querySelector(".rot-direct-input").checked = Boolean(direct);
 
     row.querySelector(".rot-remove").onclick = () => {
       row.remove();
@@ -1344,7 +1357,7 @@
 
   function setPageRows(pages) {
     pageRowsHost().textContent = "";
-    for (const page of pages) addPageRow(page.url, page.seconds);
+    for (const page of pages) addPageRow(page.url, page.seconds, false, page.direct);
     syncPagesEmpty();
   }
 
@@ -1357,7 +1370,7 @@
       const seconds = Number.isFinite(raw) && raw > 0
         ? clamp(Math.round(raw), PAGE_MIN_S, PAGE_MAX_S)
         : PAGE_DEFAULT_S;
-      out.push({ url, seconds });
+      out.push({ url, seconds, direct: row.querySelector(".rot-direct-input").checked });
       return out;
     }, []);
   }

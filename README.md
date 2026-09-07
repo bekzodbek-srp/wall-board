@@ -165,8 +165,14 @@ Behaviour worth knowing:
 - **A page the proxy refuses still gets shown**, because the proxy's own 403 /
   502 notice explains what is wrong and names the fix. That is more useful on a
   wall than a blank tile.
-- **Every page is proxied**, so sites that set `X-Frame-Options` can still be
-  embedded — but see Security: each page's origin joins the allowlist.
+- **Every page is proxied by default**, so sites that set `X-Frame-Options` can
+  still be embedded — but see Security: each page's origin joins the allowlist.
+- **Or tick `direct` on a page** and the browser fetches it itself, with no
+  proxy in the way. That only works for a site that permits being framed (no
+  `X-Frame-Options`, no `frame-ancestors`), but when it does it is the better
+  option: fewer moving parts, the site's own session, and its origin never joins
+  the proxy allowlist. It also works when the *server* cannot reach the site at
+  all — which is what makes a restricted host usable.
 
 > **The `traffic-light` widget duplicates a rule.** Its cutoffs are the same
 > ones as `../client-clock`, and the reasoning behind them is in that project's
@@ -273,9 +279,27 @@ Tunnel connection failed: 403 Forbidden
 ```
 
 That is the host's egress refusing a `CONNECT`; the site itself is fine. The
-widget says so rather than telling you to go and restart a healthy server. There
-is no way around it from inside the app — it needs an account with unrestricted
-outbound access, or somewhere else to run.
+widget says so rather than telling you to go and restart a healthy server.
+
+**There is one way around it.** Tick **direct** on the page. The browser then
+fetches it, and your browser is not behind the host's egress. Check first
+whether the site allows being framed:
+
+```sh
+curl -sSL -o /dev/null -D - https://your-site/ | grep -iE 'x-frame-options|frame-ancestors'
+```
+
+Nothing printed means it will embed directly. `X-Frame-Options: SAMEORIGIN` or a
+`frame-ancestors` rule means it will not, and that page still needs the proxy —
+so it still needs the host to have outbound access. If you control the site, you
+can allow it instead, e.g. in Caddy:
+
+```
+header {
+    -X-Frame-Options
+    Content-Security-Policy "frame-ancestors https://your-board.example"
+}
+```
 
 A tile pointing at `http://localhost:…` also stops meaning your machine: on a
 host it is that host's own loopback. Use a publicly reachable address.

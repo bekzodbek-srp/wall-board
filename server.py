@@ -292,6 +292,8 @@ def validate_config(incoming: dict, previous: dict) -> dict:
                 pages.append({
                     "url": url,
                     "seconds": _clamp_int(seconds, MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS),
+                    # A direct page is fetched by the browser, not by us.
+                    "direct": bool(entry.get("direct")),
                 })
             # An absorbed iframe tile arrives carrying a bare `url` instead.
             if not pages and re.match(r"^https?://", str(raw.get("url") or ""), re.I):
@@ -374,7 +376,10 @@ def origins_of(config: dict) -> list[str]:
             origins.add(origin_of(tile["url"]))
         if kind in ("rotator", "carousel"):
             for page in tile.get("pages") or []:
-                if isinstance(page, dict) and page.get("url"):
+                # A direct page never touches the proxy, so it must not
+                # widen the allowlist, and there is nothing to probe.
+                if (isinstance(page, dict) and page.get("url")
+                        and not page.get("direct")):
                     origins.add(origin_of(page["url"]))
     return sorted(origins)
 
