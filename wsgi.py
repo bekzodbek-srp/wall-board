@@ -46,7 +46,8 @@ _config_mtime: float | None = None
 
 def _load_into_handler() -> None:
     config = server.load_config()
-    if server.migrate_types(config) | server.migrate_layout(config):
+    if (server.migrate_types(config) | server.migrate_layout(config)
+            | server.migrate_reloads(config)):
         server.save_config(config)
     server.Handler.config = config
     server.Handler.allowed_origins = server.origins_of(config)

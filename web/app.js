@@ -38,10 +38,12 @@
   const pageSrc = (page) => (page.direct ? page.url : proxied(page.url));
   const uid = (kind) => `${kind}-${Math.random().toString(36).slice(2, 8)}`;
 
-  // Rotator page durations. Re-clamped on the client as well as the server:
-  // /api/config ships tiles verbatim, config.json is hand-editable, and the
-  // startup layout migration re-saves tiles without revalidating them.
+  // Carousel page durations and reload intervals. Re-clamped on the client as
+  // well as the server: /api/config ships tiles verbatim, config.json is
+  // hand-editable, and the startup migrations re-save tiles without
+  // revalidating them.
   const PAGE_MIN_S = 1, PAGE_MAX_S = 60, PAGE_DEFAULT_S = 10;
+  const PAGE_RELOAD_MAX_MIN = 1440;    // 0 = never reload
 
   /** Wall-clock fields of an instant in a given zone. */
   function zonedParts(date, timeZone) {
@@ -67,10 +69,13 @@
       if (!/^https?:\/\//i.test(url)) continue;
       let seconds = Number(page.seconds);
       if (!Number.isFinite(seconds) || seconds <= 0) seconds = PAGE_DEFAULT_S;
+      const every = Number(page.reloadMinutes);
       out.push({
         url,
         seconds: clamp(Math.round(seconds), PAGE_MIN_S, PAGE_MAX_S),
         direct: Boolean(page.direct),
+        reloadMinutes: Number.isFinite(every)
+          ? clamp(Math.round(every), 0, PAGE_RELOAD_MAX_MIN) : 0,
       });
     }
     return out;
@@ -374,21 +379,36 @@
       }
 
       const FIRST_LOAD_MS = 20000;
+      // A little longer than the .rot-slide cross-fade. The outgoing frame is
+      // still showing underneath the incoming one until then.
+      const FADE_MS = 500;
       const single = pages.length === 1;
 
-      // Two slots that swap roles. The visible one is `.on` (z-index 2); the
-      // other is `.under` (z-index 1) — opaque, but wholly covered, which is
-      // where the NEXT page loads unseen. A swap is two class flips: an iframe
-      // is never reparented or reordered, because that reloads it.
-      const slots = [0, 1].map(() => {
+      // One frame per page, loaded once and then kept. The visible one is `.on`
+      // (z-index 2); the rest sit at z-index 1, invisible but laid out at full
+      // size, so a dashboard keeps rendering and refreshing itself while it
+      // waits. Rotating is a class flip between pages that are already there,
+      // so after the first lap it fetches nothing. A page is only fetched again
+      // when its own reload interval runs out, or on Reload. A frame is never
+      // reparented or reordered, because that reloads it.
+      const slides = pages.map((page) => {
         const frame = document.createElement("iframe");
         frame.className = "rot-slide";
         frame.setAttribute("allow", "fullscreen");
         frame.setAttribute("referrerpolicy", "no-referrer");
         frame.setAttribute("tabindex", "-1");
-        return frame;
+        body.append(frame);
+        return {
+          frame, page,
+          token: 0,           // invalidates the onload of an abandoned load
+          since: 0,           // when its src was last set; 0 = never
+          loaded: false,      // finished loading, so it may be shown
+          failed: false,      // what loaded is this server's own error notice
+          fails: 0,           // consecutive failed or abandoned loads
+          stale: false,       // reload interval ran out while it was on screen
+          reloadTimer: null,
+        };
       });
-      body.append(slots[0], slots[1]);
 
       // Overlay after the slides, so paint order keeps it on top. Its own
       // opacity-based class, because the shared `.state` toggles `display` and
@@ -407,22 +427,15 @@
       head.querySelector(".spacer").after(stamp);
 
       let stopped = false;      // set before anything else in dispose()
-      let gen = 0;              // invalidates async continuations
       let timer = null;         // THE rotation timer. There is only ever one.
       let paused = false;
       let index = 0;            // page on screen
-      let visible = 0;          // slot showing it
-      let ready = false;        // has the hidden slot finished loading?
-      let waiting = false;      // dwell expired; holding for the preload
-      let sawLoad = false;      // did anything load at all this lap?
-      let backoff = 0;
-      let refreshTimer = null;  // single-page only: the old panel's auto-refresh
-      let pendingIndex = 0;     // page currently loading into the hidden slot
-      let skips = 0;            // consecutive pages that never arrived
+      let pending = 0;          // page due on screen next
+      let waiting = false;      // dwell expired; holding for `pending` to load
       let painted = false;      // has anything ever been shown?
 
-      const idle = () => slots[1 - visible];
       const nextIndex = () => (index + 1) % pages.length;
+      const onScreen = (slide) => slide === slides[index];
 
       function arm(ms) {
         clearTimeout(timer);
@@ -434,13 +447,10 @@
         return clamp(pages[index].seconds * 1000, 2500, 8000);
       }
 
-      function dwell() {
-        const base = pages[index].seconds * 1000;
-        // If a whole lap loaded nothing, stop hammering a dead server.
-        return backoff
-          ? Math.max(base, Math.min(60000, 5000 * 2 ** (backoff - 1)))
-          : base;
-      }
+      const dwell = () => pages[index].seconds * 1000;
+
+      /** How long to leave a page that failed before asking for it again. */
+      const retryDelay = (fails) => Math.min(60000, 5000 * 2 ** Math.max(0, fails - 1));
 
       const showOverlay = (text, isError) => {
         overlay.querySelector(".why").textContent = text;
@@ -461,41 +471,92 @@
         bar.style.animationPlayState = paused ? "paused" : "running";
       }
 
-      /** Point the hidden slot at a page and wait for it, unseen. */
-      function preload(target) {
-        pendingIndex = target;
-        const slot = idle();
-        const mine = gen;
-        ready = false;
-        slot.onload = () => {
-          if (stopped || mine !== gen) return;
-          sawLoad = true;
-          ready = true;
-          if (waiting) { waiting = false; swap(); }
-        };
-        slot.src = pageSrc(pages[target]);
+      /** Did this server answer with its own error notice instead of the page?
+       *  Only a proxied page is same-origin and so readable. A direct page
+       *  cannot be inspected and never counts as failed. */
+      function isNotice(frame) {
+        try {
+          const doc = frame.contentDocument;
+          return Boolean(doc && doc.querySelector('meta[name="wallboard-notice"]'));
+        } catch {
+          return false;
+        }
       }
 
-      function swap() {
+      /** Point a page's own frame at it. Its reload interval starts over. */
+      function load(slide) {
+        const mine = ++slide.token;
+        Object.assign(slide, { since: Date.now(), loaded: false, failed: false, stale: false });
+        slide.frame.onload = () => {
+          if (stopped || mine !== slide.token) return;
+          slide.loaded = true;
+          slide.failed = isNotice(slide.frame);
+          slide.fails = slide.failed ? slide.fails + 1 : 0;
+          if (onScreen(slide)) { painted = true; hideOverlay(); }
+          if (waiting && slide === slides[pending]) { waiting = false; show(pending); }
+        };
+        slide.frame.src = pageSrc(slide.page);
+
+        clearTimeout(slide.reloadTimer);
+        slide.reloadTimer = slide.page.reloadMinutes
+          ? setTimeout(() => expire(slide), slide.page.reloadMinutes * 60000)
+          : null;
+      }
+
+      /** Does this page need fetching before its turn? A live page never does. */
+      function due(slide) {
+        if (!slide.since) return true;                      // never asked for
+        if (slide.loaded && !slide.failed) return false;
+        // Still loading, or it loaded an error notice: ask again, backing off so
+        // a dead server is not hammered.
+        const wait = retryDelay(slide.fails);
+        return Date.now() - slide.since >= (slide.loaded ? wait : Math.max(FIRST_LOAD_MS, wait));
+      }
+
+      /** Get a page ready out of sight. The page on screen is left alone unless
+       *  it has nothing to show yet. */
+      function prepare(target) {
+        const slide = slides[target];
+        if ((!onScreen(slide) || !slide.loaded) && due(slide)) load(slide);
+      }
+
+      /** A page's reload interval ran out. */
+      function expire(slide) {
+        if (stopped) return;
+        // Never under someone's eyes. A page on screen is reloaded as it leaves,
+        // and a held one (paused, or in use) once it is let go. Only a single
+        // page, which never leaves, is reloaded where it stands.
+        if (onScreen(slide) && (paused || !single)) {
+          slide.stale = true;
+          return;
+        }
+        load(slide);
+      }
+
+      function show(target) {
         if (stopped) return;
         // Something is about to be on screen, so the first-paint spinner is
         // done — even if it was page 1 that never arrived.
         painted = true;
         hideOverlay();
-        // Outgoing stays opaque underneath (its idle transition delays the
-        // drop to zero); incoming fades in above it. One class, two layers.
-        slots[visible].classList.remove("on");
-        idle().classList.add("on");
-        visible = 1 - visible;
-        index = pendingIndex;
-        skips = 0;
-
-        if (index === 0) {                  // a lap just completed
-          backoff = sawLoad ? 0 : Math.min(backoff + 1, 4);
-          sawLoad = false;
+        const leaving = slides[index];
+        if (target !== index) {
+          // Outgoing stays opaque underneath (its idle transition delays the
+          // drop to zero); incoming fades in above it. One class, two layers.
+          leaving.frame.classList.remove("on");
+          slides[target].frame.classList.add("on");
+          index = target;
+          if (leaving.stale) {
+            // Its reload came due while it was up. Wait for the fade, then
+            // reload it unseen; if it is back on screen by then, it waits again.
+            setTimeout(() => {
+              if (!stopped && leaving.stale && !onScreen(leaving)) load(leaving);
+            }, FADE_MS);
+          }
         }
         render();
-        preload(nextIndex());
+        pending = nextIndex();
+        prepare(pending);
         const ms = dwell();
         arm(ms);
         restartBar(ms);
@@ -504,52 +565,40 @@
       function onTimer() {
         if (stopped || paused) return;
         if (single) {
-          // The only timer a single-page rotator ever sets: a first-load check.
+          // The only timer a single page ever sets: a first-load check.
           if (!painted) {
             showOverlay("This page did not load. Press Reload to try again.", true);
           }
           return;
         }
-        if (waiting) {
-          // The next page never arrived. Skip past it rather than promoting a
-          // blank frame onto the wall, and leave the good page up.
-          waiting = false;
-          skips += 1;
-          const ms = dwell();
-          if (skips >= pages.length) {      // nothing at all is loading
-            skips = 0;
-            backoff = Math.min(backoff + 1, 4);
-          } else {
-            preload((pendingIndex + 1) % pages.length);
-          }
-          arm(ms);
-          restartBar(ms);
-          return;
+        // Loaded includes the proxy's own error notice: it names the problem,
+        // which is more use on a wall than a blank tile.
+        if (slides[pending].loaded) return show(pending);
+        if (!waiting) {
+          // Not ready. Say nothing and change nothing: the page already on
+          // screen simply stays a moment longer. A spinner over a page you are
+          // already watching is worse than the page lingering.
+          waiting = true;
+          return arm(grace());
         }
-        if (ready) return swap();
-        // Not ready. Say nothing and change nothing: the page already on screen
-        // simply stays a moment longer. Loading happens entirely out of sight,
-        // in the covered slot — a spinner over a page you are already watching
-        // is worse than the page lingering.
-        waiting = true;
-        arm(grace());
+        // It never arrived. Skip past it rather than promoting a blank frame
+        // onto the wall, and leave the good page up. It is asked for again,
+        // backing off, the next time its turn comes round.
+        waiting = false;
+        slides[pending].fails += 1;
+        pending = (pending + 1) % pages.length;
+        prepare(pending);
+        const ms = dwell();
+        arm(ms);
+        restartBar(ms);
       }
 
+      /** The Reload button: the page on screen, in place, because it was asked for. */
       function reload() {
         if (stopped) return;
-        gen++;                              // drop any in-flight continuations
-        const mine = gen;
-        const slot = slots[visible];
-        slot.onload = () => {
-          if (stopped || mine !== gen) return;
-          sawLoad = true;
-          painted = true;
-          hideOverlay();
-        };
-        slot.src = pageSrc(pages[index]);
+        load(slides[index]);
         waiting = false;
         if (single) return arm(FIRST_LOAD_MS);
-        preload(nextIndex());
         if (!paused) { const ms = dwell(); arm(ms); restartBar(ms); }
       }
 
@@ -559,8 +608,16 @@
         setIcon(pauseBtn, paused ? "play" : "pause",
           paused ? "Resume the rotation" : "Pause the rotation");
         bar.style.animationPlayState = paused ? "paused" : "running";
-        if (paused) { clearTimeout(timer); timer = null; }
-        else { const ms = dwell(); arm(ms); restartBar(ms); }
+        if (paused) {
+          clearTimeout(timer);
+          timer = null;
+          return;
+        }
+        // Let go of a single page whose reload came due while it was held.
+        if (single && slides[0].stale) load(slides[0]);
+        const ms = dwell();
+        arm(ms);
+        restartBar(ms);
       }
       const pauseBtn = addHeadButton(head, "pause", "Pause the rotation",
         () => setPaused(!paused));
@@ -580,45 +637,35 @@
 
       function dispose() {
         stopped = true;                     // first, so nothing re-arms
-        gen++;                              // then invalidate continuations
         clearTimeout(timer);
         timer = null;
-        clearInterval(refreshTimer);
-        refreshTimer = null;
-        for (const slot of slots) {
-          slot.onload = null;
-          // Abandoned preloads otherwise hold a proxy connection open for its
-          // full 20s upstream timeout, and the browser allows only ~6 per origin.
-          slot.src = "about:blank";
+        for (const slide of slides) {
+          slide.token++;                    // invalidate in-flight loads
+          clearTimeout(slide.reloadTimer);
+          slide.frame.onload = null;
+          // Abandoned loads otherwise hold a proxy connection open for its full
+          // 20s upstream timeout, and the browser allows only ~6 per origin.
+          slide.frame.src = "about:blank";
         }
       }
 
       // Start. Nothing here may throw: buildWidget has no try/catch, and a
       // throw would abort renderAll mid-loop leaving later widgets unbuilt.
       try {
-        slots[0].classList.add("on");
-        const mine = gen;
-        slots[0].onload = () => {
-          if (stopped || mine !== gen) return;
-          sawLoad = true;
-          painted = true;
-          hideOverlay();
-        };
+        slides[0].frame.classList.add("on");
         // The only loading state anywhere: the first paint, when the widget
         // would otherwise be an empty box. It never returns after that.
         showOverlay("");
-        slots[0].src = pageSrc(pages[0]);
+        load(slides[0]);
         render();
         if (single) {
           arm(FIRST_LOAD_MS);               // no rotation; just a load check
-          // With one page there is nothing to rotate to, so the only reason to
-          // touch src again is the panel's own auto-refresh, if it has one.
-          if (def.refreshMinutes) {
-            refreshTimer = setInterval(reload,
-              clamp(def.refreshMinutes, 1, 1440) * 60000);
-          }
         } else {
-          preload(nextIndex());
+          // Only the next page is fetched ahead. The rest load one at a time as
+          // their turn approaches, so the first lap does not hit every upstream
+          // at once.
+          pending = 1;
+          prepare(pending);
           const ms = dwell();
           arm(ms);
           restartBar(ms);
@@ -1111,11 +1158,14 @@
     }
     el("carouselHint").textContent = single
       ? "A single page is held on screen indefinitely — no timer, no transitions, "
-        + "and it is never reloaded, so a live dashboard keeps its session. Add a "
-        + "second page to start rotating."
+        + "and it is only reloaded if you give it a reload interval, so a live "
+        + "dashboard keeps its session. Add a second page to start rotating."
       : "Shown in this order, each for its own duration (1–60 seconds, 10 by "
-        + "default), looping forever. Drag the handle to reorder, or focus it and "
-        + "press the up and down arrows.";
+        + "default), looping forever. Every page loads once and stays live while "
+        + "the others are shown, so rotating fetches nothing. A reload interval "
+        + "(minutes, 0 = never) fetches a page again, but only while it is off "
+        + "screen. Drag the handle to reorder, or focus it and press the up and "
+        + "down arrows.";
     el("carouselHint").textContent += " Pages marked “in browser” are loaded by "
       + "your browser; untick that for a site that refuses to be framed, and this "
       + "server will fetch it instead.";
@@ -1295,26 +1345,37 @@
     row.querySelector(".rot-grip").focus();
   }
 
-  function addPageRow(url = "", seconds = PAGE_DEFAULT_S, focus = false, direct = false) {
+  function addPageRow(url = "", seconds = PAGE_DEFAULT_S, focus = false, direct = false,
+    reloadMinutes = 0) {
     const row = document.createElement("div");
     row.className = "rot-row";
+    // Timing and routing go on a second line, so the URL keeps its width.
     row.innerHTML =
       '<button type="button" class="rot-grip" aria-label="Reorder this page" ' +
         'title="Drag to reorder, or press the up and down arrows">' + icon("grip") + '</button>' +
       '<input type="url" class="rot-url" placeholder="https://example.com" ' +
         'aria-label="Page URL">' +
-      '<input type="number" class="secs" min="1" max="60" step="1" ' +
-        'aria-label="Seconds to display">' +
-      '<span class="unit">s</span>' +
-      '<label class="rot-direct" title="Loaded by your browser, straight from the ' +
-        'site. Untick to route it through this server instead, which is what lets ' +
-        'a site that refuses to be framed work at all.">' +
-        '<input type="checkbox" class="rot-direct-input"><span>in browser</span></label>' +
       '<button type="button" class="icon danger rot-remove" ' +
-        'aria-label="Remove this page" title="Remove this page">' + icon("remove") + '</button>';
+        'aria-label="Remove this page" title="Remove this page">' + icon("remove") + '</button>' +
+      '<div class="rot-opts">' +
+        '<input type="number" class="secs" min="1" max="60" step="1" ' +
+          'aria-label="Seconds to display">' +
+        '<span class="unit">s</span>' +
+        '<span class="unit">reload every</span>' +
+        '<input type="number" class="reload" min="0" max="1440" step="1" ' +
+          'aria-label="Reload every so many minutes, 0 for never" ' +
+          'title="Fetch this page again every so many minutes. 0 never reloads it. ' +
+          'While the carousel rotates, a page is only reloaded when it is off screen.">' +
+        '<span class="unit">min</span>' +
+        '<label class="rot-direct" title="Loaded by your browser, straight from the ' +
+          'site. Untick to route it through this server instead, which is what lets ' +
+          'a site that refuses to be framed work at all.">' +
+          '<input type="checkbox" class="rot-direct-input"><span>in browser</span></label>' +
+      '</div>';
 
     row.querySelector(".rot-url").value = url;
     row.querySelector(".secs").value = seconds;
+    row.querySelector(".reload").value = reloadMinutes;
     row.querySelector(".rot-direct-input").checked = Boolean(direct);
 
     row.querySelector(".rot-remove").onclick = () => {
@@ -1360,7 +1421,9 @@
 
   function setPageRows(pages) {
     pageRowsHost().textContent = "";
-    for (const page of pages) addPageRow(page.url, page.seconds, false, page.direct);
+    for (const page of pages) {
+      addPageRow(page.url, page.seconds, false, page.direct, page.reloadMinutes);
+    }
     syncPagesEmpty();
   }
 
@@ -1373,7 +1436,15 @@
       const seconds = Number.isFinite(raw) && raw > 0
         ? clamp(Math.round(raw), PAGE_MIN_S, PAGE_MAX_S)
         : PAGE_DEFAULT_S;
-      out.push({ url, seconds, direct: row.querySelector(".rot-direct-input").checked });
+      const every = Number(row.querySelector(".reload").value);
+      out.push({
+        url,
+        seconds,
+        direct: row.querySelector(".rot-direct-input").checked,
+        reloadMinutes: Number.isFinite(every) && every > 0
+          ? clamp(Math.round(every), 0, PAGE_RELOAD_MAX_MIN)
+          : 0,
+      });
       return out;
     }, []);
   }

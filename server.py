@@ -75,9 +75,11 @@ WIDGET_TYPES = set(WIDGET_KINDS)
 LEGACY_TYPES = {"rotator": "carousel", "iframe": "carousel"}
 TYPES_VERSION = "families-v1"
 
-# Per-page dwell for the rotator widget.
+# Per-page dwell for the carousel widget.
 MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS = 1, 60, 10
 MAX_PAGES = 40
+# Per-page reload interval, in minutes. 0 means the page is never reloaded.
+MAX_RELOAD_MINUTES = 1440
 
 # Widgets are placed freely, but the board must always fit one screen, so
 # geometry is stored as FRACTIONS of the canvas (0..1) rather than pixels.
@@ -125,6 +127,29 @@ def migrate_types(config: dict) -> bool:
                              if re.match(r"^https?://", url, re.I) else [])
     config["types"] = TYPES_VERSION
     return True
+
+
+def migrate_reloads(config: dict) -> bool:
+    """Move a carousel's tile-wide `refreshMinutes` onto its page. True if changed.
+
+    The old setting only ever took effect on a one-page carousel, which is
+    exactly what that page's own `reloadMinutes` now says. On a longer carousel
+    it did nothing, so there it is simply dropped. No version marker is needed:
+    once the key is gone there is nothing left to convert.
+    """
+    changed = False
+    for tile in config.get("tiles", []):
+        if tile.get("type") == "carousel" and "refreshMinutes" in tile:
+            _fold_refresh(tile.pop("refreshMinutes"), tile.get("pages") or [])
+            changed = True
+    return changed
+
+
+def _fold_refresh(refresh, pages: list) -> None:
+    if refresh in (None, "", 0) or len(pages) != 1 or not isinstance(pages[0], dict):
+        return
+    if not pages[0].get("reloadMinutes"):
+        pages[0]["reloadMinutes"] = _clamp_int(refresh, 1, MAX_RELOAD_MINUTES, 5)
 
 
 def migrate_layout(config: dict) -> bool:
@@ -294,14 +319,16 @@ def validate_config(incoming: dict, previous: dict) -> dict:
                     "seconds": _clamp_int(seconds, MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS),
                     # A direct page is fetched by the browser, not by us.
                     "direct": bool(entry.get("direct")),
+                    "reloadMinutes": _clamp_int(entry.get("reloadMinutes"), 0,
+                                                MAX_RELOAD_MINUTES, 0),
                 })
             # An absorbed iframe tile arrives carrying a bare `url` instead.
             if not pages and re.match(r"^https?://", str(raw.get("url") or ""), re.I):
-                pages = [{"url": str(raw["url"]).strip(), "seconds": DEFAULT_SECONDS}]
+                pages = [{"url": str(raw["url"]).strip(), "seconds": DEFAULT_SECONDS,
+                          "direct": False, "reloadMinutes": 0}]
+            # A page opened before migrate_reloads() can still send the old key.
+            _fold_refresh(raw.get("refreshMinutes"), pages)
             tile["pages"] = pages
-            refresh = raw.get("refreshMinutes")
-            if refresh not in (None, "", 0):
-                tile["refreshMinutes"] = _clamp_int(refresh, 1, 1440, 5)
 
         elif kind == "clock":
             tile["timezone"] = str(raw.get("timezone") or "America/New_York")
@@ -571,7 +598,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _send_notice(self, status: int, title: str, detail: str) -> None:
         """A failing tile is shown inside an iframe, so the failure needs to be
         a presentable page rather than the stdlib's default error HTML."""
+        # The meta tag lets the carousel tell this notice from a real page, so
+        # it can ask for the page again rather than keep the error up for good.
         body = f"""<!doctype html><meta charset="utf-8">
+<meta name="wallboard-notice" content="{status}">
 <style>
   :root {{ color-scheme: light dark; }}
   body {{ margin:0; min-height:100vh; display:flex; align-items:center;
@@ -784,6 +814,8 @@ def main() -> int:
         migrated.append("folded the retired widget types into the current families")
     if migrate_layout(config):
         migrated.append("converted the layout to fractional coordinates (fits any screen)")
+    if migrate_reloads(config):
+        migrated.append("moved carousel refreshMinutes onto the page as its reload interval")
     if migrated:
         save_config(config)
         for line in migrated:

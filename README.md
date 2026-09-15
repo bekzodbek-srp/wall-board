@@ -131,40 +131,54 @@ with a cheerful `{"saved": true}`. And if it loads URLs, it must be handled in
 
 ### The Carousel widget
 
-Add a **Carousel**, then list its pages in the dialog: a URL and a duration each,
-in the order you want them. Drag ⠿ to reorder (or focus it and press ↑/↓), ✕ to
-remove a page. Durations are 1–60 seconds and default to 10.
+Add a **Carousel**, then list its pages in the dialog: a URL, a duration and a
+reload interval each, in the order you want them. Drag ⠿ to reorder (or focus it
+and press ↑/↓), ✕ to remove a page. Durations are 1–60 seconds and default to
+10. Reload intervals are 0–1440 minutes and default to 0, which means never.
 
-It keeps two stacked frames. The one on screen sits above the other, which has
-already loaded the *next* page out of sight — so a change is a cross-fade
-between two ready pages, not a load. The outgoing frame holds full opacity until
-the incoming one has arrived and only then drops out, which avoids the dip a
-plain cross-fade gives. Hovering the widget reveals **Pause**, **Next**,
+It keeps one stacked frame per page. Each page is loaded once, out of sight, and
+then kept: the ones not on screen stay live underneath, so a dashboard carries on
+refreshing itself while it waits. A change is a cross-fade between two pages that
+are already there, not a load, and after the first lap rotating fetches nothing
+at all. The outgoing frame holds full opacity until the incoming one has arrived
+and only then drops out, which avoids the dip a plain cross-fade gives. Hovering the widget reveals **Pause**, **Next**,
 **Reload** and **Open**, plus which page of how many is showing; a thin bar
 along the bottom shows how much of the current page's time is left.
 
 Behaviour worth knowing:
 
-- **One page means no rotation at all** — no timer, and its `src` is never
-  reassigned, so a live dashboard keeps its session, scroll position and
-  animations indefinitely. The duration box is disabled in that case, because
+- **A page is only fetched again when you ask.** Give it a reload interval and
+  it is reloaded every that many minutes; leave it at 0 and it never is. A
+  reload never happens under someone's eyes: a page on screen waits until the
+  carousel moves on, then reloads out of sight. For a dashboard that refreshes
+  itself, such as OpenObserve with its own refresh interval set, 0 is right.
+- **Every page stays in memory.** That is the price of not reloading. A few
+  dashboards are fine; dozens of heavy ones in one carousel are not.
+- **One page means no rotation at all** — no timer, and its `src` is only
+  reassigned by its reload interval, so a live dashboard keeps its session,
+  scroll position and animations. Because that page never leaves the screen, its
+  reload happens in place. The duration box is disabled in that case, because
   there is nothing to advance to; add a second page and it comes back. This is
-  what replaced the old standalone panel, and it keeps that panel's optional
-  auto-refresh.
-- **Loading is never visible.** Every page loads in the covered slot, out of
-  sight. If the next one is not ready when its turn comes, the widget says
+  what replaced the old standalone panel, whose tile-wide `refreshMinutes`
+  becomes that page's reload interval on first start.
+- **Loading is never visible.** Every page loads in its own covered frame, out
+  of sight. If the next one is not ready when its turn comes, the widget says
   nothing and changes nothing — the page already on screen simply stays a little
   longer. There is exactly one loading indicator in the whole widget: a spinner
   on the very first paint, when the tile would otherwise be an empty box, and it
   never comes back.
 - **A page that never loads is skipped**, not shown blank; the page already up
   stays up. The cost is that a slow page stretches the page before it — it waits
-  up to its own duration (min 2.5s, max 8s) before giving up and skipping. If a
-  whole lap loads nothing, it backs off (5s, 10s, 20s…, capped at 60s) instead of
-  hammering a dead server.
+  up to its own duration (min 2.5s, max 8s) before giving up and skipping. It is
+  asked for again the next time its turn comes, backing off (5s, 10s, 20s…,
+  capped at 60s) instead of hammering a dead server.
 - **A page the proxy refuses still gets shown**, because the proxy's own 403 /
   502 notice explains what is wrong and names the fix. That is more useful on a
-  wall than a blank tile.
+  wall than a blank tile. The notice is not kept like a real page: it is fetched
+  again on later laps, with the same back-off, so the page comes back by itself
+  once the upstream does. A page loaded *in browser* cannot be inspected this
+  way, so for one of those a failed load stays until its reload interval or
+  **Reload**.
 - **Pages load in your browser by default** — the tick marked *in browser* on
   each row. Nothing passes through this server: the site sees your browser, with
   its own session, and its origin never joins the proxy allowlist or the health
@@ -198,11 +212,15 @@ Nothing printed means it will load in the browser.
 ```json
 {
   "id": "errors",
-  "type": "iframe",
+  "type": "carousel",
   "title": "Error rate",
-  "url": "http://localhost:5080/web/short/abc123?org_identifier=default",
-  "x": 0.5, "y": 0, "w": 0.5, "h": 0.6,
-  "refreshMinutes": 5
+  "pages": [
+    {
+      "url": "http://localhost:5080/web/short/abc123?org_identifier=default",
+      "seconds": 10, "direct": false, "reloadMinutes": 5
+    }
+  ],
+  "x": 0.5, "y": 0, "w": 0.5, "h": 0.6
 }
 ```
 
